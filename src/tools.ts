@@ -1,6 +1,9 @@
 /**
- * tools.ts - fix #303 v3 - compila sem dom lib e sem node_modules local
- * O1-O5 + fix TS2304 TextEncoder/AbortSignal/console
+ * tools.ts - fix #303 + #277 - FINAL v4
+ * - O1-O5 #303 (NUL, 1MiB, content_kind audit, k, id)
+ * - Alinhado com Python md_cg/evidence.py _NODE_ID_RE
+ * - Compila sem lib:dom (sem TextEncoder/Blob/AbortSignal direto)
+ * - TS18048/TS7006 fix
  */
 
 import type { Context } from '@deepseek-ai/cordis'
@@ -8,13 +11,16 @@ import { defineTool, type ParameterPropertySpec, type ParameterSchemaSpec, type 
 import type { LingshuBridge } from './bridge.ts'
 import { attributeSession } from './lib/session_state.js'
 
-// --- #303 O1-O5 ---
+// --- #303 O1-O5 + #277 ---
 const MAX_BYTES = 1_048_576
 const ALLOWED_CONTENT_KINDS = new Set([
   'fact','preference','skill','project','workflow',
   'error_lesson','identity','relation','anchor','timeline'
 ])
-const ID_RE = /^[A-Za-z0-9_-]{1,128}$/
+// GOOD: node-0123456789ab, mem_1791909293720_48076f, 中文节点, a.b@c, a,b, a-b_c
+// BAD:  ../../, /etc/passwd, sub/dir, has:colon, has%2e%2e, None/null, >128
+const ID_RE = /^[\p{L}\p{N}_\-.@,]{1,128}$/u
+const FORBIDDEN_ID_EXACT = new Set(['None','null','none','NULL'])
 const K_MIN = 1
 const K_MAX = 100
 
@@ -24,18 +30,36 @@ function throwExplicit(code: string, msg: string): never {
   throw err
 }
 
-// Fix TS2304: usa Buffer se existir, senão fallback sem precisar de lib dom
+function isTraversalLike(id: string): boolean {
+  const low = id.toLowerCase()
+  if (low.includes('..')) return true
+  if (low.includes('%2e')) return true
+  if (low.includes('/') || low.includes('\\')) return true
+  if (low.includes(':')) return true
+  if (low.includes('%')) return true
+  return false
+}
+
 function byteLengthUtf8(str: string): number {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const g = globalThis as any
-  if (typeof g.Buffer !== 'undefined') {
+  if (typeof g.Buffer !== 'undefined' && g.Buffer.byteLength) {
     return g.Buffer.byteLength(str, 'utf-8')
   }
   if (typeof g.TextEncoder !== 'undefined') {
     return new g.TextEncoder().encode(str).length
   }
-  // fallback puro JS (aproximado, suficiente pra 1MiB check)
-  return new Blob([str]).size
+  if (typeof g.Blob !== 'undefined') {
+    try { return new g.Blob([str]).size } catch {}
+  }
+  let len = 0
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i)
+    if (c <= 0x7f) len += 1
+    else if (c <= 0x7ff) len += 2
+    else if (c >= 0xd800 && c <= 0xdbff) { len += 4; i++ }
+    else len += 3
+  }
+  return len
 }
 
 function validateContentField(value: unknown, fieldName = 'content') {
@@ -52,7 +76,6 @@ function validateContentKind(kind: unknown) {
   if (kind == null) return
   if (typeof kind !== 'string') return
   if (!ALLOWED_CONTENT_KINDS.has(kind)) {
-    // Fix TS2584 console: usa globalThis
     ;(globalThis as any).console?.warn?.(`[AUDIT][unknown_content_kind] ${kind}`)
   }
 }
@@ -67,6 +90,12 @@ function validateId(id: unknown, fieldName = 'id') {
   if (id == null) return
   if (typeof id !== 'string') {
     throwExplicit('INVALID_NODE_ID', `${fieldName} 类型错误`)
+  }
+  if (FORBIDDEN_ID_EXACT.has(id)) {
+    throwExplicit('INVALID_NODE_ID', `invalid_node_id: reserved=${id}`)
+  }
+  if (isTraversalLike(id)) {
+    throwExplicit('INVALID_NODE_ID', `invalid_node_id: traversal=${id}`)
   }
   if (!ID_RE.test(id)) {
     throwExplicit('INVALID_NODE_ID', `invalid_node_id: ${fieldName}=${id}`)
@@ -175,7 +204,6 @@ export async function registerLingshuTools(
         parameters: schemaToParameters(tool.inputSchema),
         output: {
           schema: { type: 'json' } as never,
-          // Fix TS7006: tipa explicitamente _args e value
           render(_args: any, value: any) {
             return [{ type: 'text', text: extractText((value as McpCallResultLike).content ?? []) }]
           },
