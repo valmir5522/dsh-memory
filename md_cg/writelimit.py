@@ -191,7 +191,7 @@ def check(cg, content, layer="contextual", role=None, node_id=None,
                         "reason": f"converge:{sig[:40]}#{rec['n']}"}
         st["sigs"][sig] = {"nid": node_id, "t": now, "n":
                            int((rec or {}).get("n") or 1),
-                           "sk": sig[:60],
+                          "sk": "" if sensitivity in ("private", "secret") else sig[:60],
                            "sens": sensitivity}      # issue #148：声明密级随签名记账
     _push_rate(st, key, now)
     _save(cg, st)
@@ -209,7 +209,8 @@ def record_accepted(cg, node_id, content, now=None, sensitivity=None) -> None:
     rec = st["sigs"].get(sig)
     if rec is None or not rec.get("nid"):
         st["sigs"][sig] = {"nid": node_id, "t": now, "n":
-                           int((rec or {}).get("n") or 1), "sk": sig[:60],
+                           int((rec or {}).get("n") or 1),
+                          "sk": "" if sensitivity in ("private", "secret") else sig[:60],
                            "sens": sensitivity}      # issue #148：声明密级随签名记账
         _save(cg, st)
 

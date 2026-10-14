@@ -4843,8 +4843,7 @@ class MdCGOS(MdCG):
         # 同源频率限制 → DEFER；同构聚合 → 并入既有节点（不新增）。
         # 只拦 contextual（自动写入落层），knowledge 手动纪律写入不受限；
         # DEFER 的原始事件仍在 recent log 时间线，可追溯不丢失。
-        lim = writelimit.check(self, content, layer=layer, role=role,
-                               node_id=node_id, importance_hint=hint)
+        lim = writelimit.check(self, content, layer=layer, role=role, node_id=node_id, importance_hint=hint, sensitivity=kw.get("sensitivity"))
         if lim is not None:
             if lim["verdict"] == "CONVERGE":
                 tgt = lim["target"]
@@ -4941,7 +4940,7 @@ class MdCGOS(MdCG):
                     v = out["verdict"] = "DEFER"
                 else:
                     # 落盘成功 → 签名→节点映射兜底回填（同构聚合的锚点）
-                    writelimit.record_accepted(self, node_id, content)
+                    writelimit.record_accepted(self, node_id, content, sensitivity=kw.get("sensitivity"))
         elif v == "MERGE":
             tgt = verdict["redundancy"]["with"]
             # 三档自治批次②：档位判定在**遗忘闸四态裁决之后、合并原语之前**
