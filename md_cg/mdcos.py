@@ -4860,13 +4860,14 @@ class MdCGOS(MdCG):
                                           "actor": self.actor})
                     return _ag
                 out = {"verdict": "MERGE", "node_id": node_id,
-                       "merged_into": tgt, "gate": lim,
-                       "converged": writelimit.converge_into(
-                           self, tgt, content, override=override,
-                           actor=self.actor, session=_writer_session(self, kw),
-                           # #148（2026-10-12）：add-路径 CONVERGE 同款接线——
-                           # 缺此行则该路径拿不到 incoming 密级、降密级 fail-closed 失效。
-                           sensitivity=kw.get("sensitivity"))}
+                       "merged_into": tgt, "gate": lim}
+                converged = writelimit.converge_into(
+                    self, tgt, content, override=override,
+                    actor=self.actor, session=_writer_session(self, kw),
+                    sensitivity=kw.get("sensitivity")
+                )
+                if converged is not None:
+                    out["converged"] = converged
                 fv = "MERGE"
             elif lim["verdict"] == "DROP":
                 # 精确重复（与既有节点正文一致）：零新信息，交回旧闸门
