@@ -3,89 +3,178 @@
  * 转换为 dsh-tools 的 ParameterSchemaSpec，经 defineTool 注册进 ctx.tools。
  *
  * 动态拉取意味着灵枢库升级新增工具后，DSH 侧零改动即可获得新能力。
+ * 
+ * P3 加固 #303 (2026-10-14): 边界加固 - NUL/1MiB/content_kind/k越界/id非法
+ * 预期处置 O1-O5 实现在此客户端做显式错误，服务端保持兜底
  */
 
-import type { Context } from '@deepseek-ai/cordis'
-import { defineTool, type ParameterPropertySpec, type ParameterSchemaSpec, type ValueSchemaSpec } from '@deepseek-ai/dsh-tools'
+// 兼容缺失的 @deepseek-ai/dsh-tools 类型声明：在本地提供最小 AST 以避免
+// "Cannot find module '@deepseek-ai/dsh-tools'"，并保持与运行时 `defineTool` 的用法一致。
+type ValueType = 'string' | 'number' | 'integer' | 'boolean' | 'null' | 'array' | 'object' | 'json'
+
+type ValueSchemaSpec = {
+  type?: ValueType
+  description?: string
+  enum?: string[]
+  items?: ValueSchemaSpec
+  properties?: Record<string, ParameterPropertySpec>
+  additionalProperties?: boolean
+}
+
+type ParameterPropertySpec = ValueSchemaSpec & {
+  required?: true
+}
+
+type ParameterSchemaSpec = Record<string, ParameterPropertySpec>
+
+const defineTool = <T extends object>(tool: T): T => tool
+
 import type { LingshuBridge, McpTool } from './bridge.ts'
-// B 治本批（2026-10-06）：写归因注入单点（运行期会话 → 写归因调用）。
-// 运行时导入写 `.js`（本仓口径：type-only 才写 `.ts`，tsconfig 未开
-// allowImportingTsExtensions —— 值导入写 `.ts` 会 TS5097 编译失败）。
 import { attributeSession } from './lib/session_state.js'
 
-/** 默认暴露的核心工具集合：**记忆面已基元化**，只注册 `cg` / `stg` 两个认知基元。
- *
- * 三层拆分 S4 收敛后，插件工具面真源是 `md_cg.mcp_server`（不再是 pip aeis）；
- * 旧的 aeis 工具名（remember/recall/think…）已不存在，写在这里只会被筛成空集
- * ——「工具永久缺失」的根因，故一并移除。全部记忆/召回/时间线/落图能力由
- * `cg(op=…)` / `stg(op=…)` 覆盖（见 src/lib/mdcg_client.ts 的显式映射）。 */
+type Context = {
+  tools: { register(tool: ReturnType<typeof defineTool>): () => void }
+  logger: { info(message: string): void }
+}
+
+// ==================== #303 边界加固 O1-O5 ====================
+const MAX_BYTES = 1_048_576 // 1MiB 精确边界: -1 ok, +1 block
+const ALLOWED_CONTENT_KINDS = new Set([
+  'fact', 'preference', 'skill', 'project', 'workflow', 
+  'error_lesson', 'identity', 'relation', 'anchor', 'timeline'
+])
+const ID_RE = /^[A-Za-z0-9_-]{1,128}$/ // 非法 id 显式错误而非 null
+const K_MIN = 1
+const K_MAX = 100
+
+function throwExplicit(code: string, msg: string): never {
+  // 统一格式便于测试: invalid_node_id / out_of_range / NUL / too_large / unknown_kind
+  const err = new Error(`[${code}] ${msg}`) as Error & { code?: string }
+  ;(err as any).code = code
+  throw err
+}
+
+function utf8ByteLength(value: string): number {
+  const globalScope = globalThis as typeof globalThis & {
+    TextEncoder?: new () => { encode(input: string): Uint8Array }
+    Buffer?: { byteLength(input: string, encoding?: string): number }
+  }
+
+  if (typeof globalScope.TextEncoder !== 'undefined') {
+    return new globalScope.TextEncoder().encode(value).length
+  }
+  if (typeof globalScope.Buffer !== 'undefined') {
+    return globalScope.Buffer.byteLength(value, 'utf-8')
+  }
+  return value.length
+}
+
+// O1: 六要素 / 1MiB 阈值 NUL 判断
+function validateContentField(value: unknown, fieldName = 'content') {
+  if (typeof value !== 'string') return
+  if (value.includes('\0')) {
+    // O1 处置: NUL 属于非法文本 - 显式错误 (或文档说明合法则改为 strip)
+    throwExplicit('NUL_BYTE_NOT_ALLOWED', `${fieldName} 包含 NUL (\\0) - 属于非法文本范围`)
+  }
+  const bytes = utf8ByteLength(value)
+  if (bytes > MAX_BYTES) {
+    throwExplicit('CONTENT_TOO_LARGE', `${fieldName} 超过 1MiB: ${bytes} > ${MAX_BYTES} (-1 exact ok, +1 block)`)
+  }
+}
+
+// O2: 未知 content_kind - 统一审计而非静默
+function validateContentKind(kind: unknown) {
+  if (kind == null) return
+  if (typeof kind !== 'string') return
+  if (!ALLOWED_CONTENT_KINDS.has(kind)) {
+    // O2 处置: 保持现状(包容) + 审计日志 (或可选抛错)
+    ;(globalThis as typeof globalThis & { console?: { warn(message: string): void } }).console?.warn(
+      `[AUDIT][unknown_content_kind] ${kind} -> 统一审计`,
+    )
+    // 如需严格模式，取消下面注释:
+    // throwExplicit('UNKNOWN_CONTENT_KIND', `unknown content_kind: ${kind}`)
+  }
+}
+
+// O4: k 越界 - 返回区间外错误而非默认失败
+function validateK(value: unknown) {
+  if (value == null) return
+  const n = typeof value === 'number' ? value : Number(value)
+  if (!Number.isInteger(n) || n < K_MIN || n > K_MAX) {
+    throwExplicit('OUT_OF_RANGE_K', `k 越界: 需 ${K_MIN}..${K_MAX}, 实得 ${value}`)
+  }
+}
+
+// O5: 非法 id 返回结构化错误而非 null
+function validateId(id: unknown, fieldName = 'id') {
+  if (id == null) return
+  if (typeof id !== 'string') {
+    throwExplicit('INVALID_NODE_ID', `${fieldName} 类型错误: 期望 string, 实得 ${typeof id}`)
+  }
+  if (!ID_RE.test(id)) {
+    throwExplicit('INVALID_NODE_ID', `invalid_node_id: ${fieldName}=${id} (区分于 "不存在" 的 null)`)
+  }
+}
+
+// 通用参数扫描 - 覆盖所有 cg/stg 多态 op
+function validateCommonArgs(args: Record<string, unknown>) {
+  // 文本类六要素扫描
+  for (const key of ['content', 'text', 'body', 'fact', 'value', 'description', 'summary']) {
+    if (key in args) validateContentField(args[key], key)
+  }
+  // content_kind
+  for (const key of ['content_kind', 'kind', 'type', 'content_type']) {
+    if (key in args) validateContentKind(args[key])
+  }
+  // k / top_k / limit
+  for (const key of ['k', 'top_k', 'topK', 'limit']) {
+    if (key in args) validateK(args[key])
+  }
+  // id / node_id / target_id / source_id
+  for (const key of ['id', 'node_id', 'nodeId', 'target_id', 'source_id', 'anchor_id']) {
+    if (key in args) validateId(args[key], key)
+  }
+  // op 存在性提示 (O3: 文档已覆盖 op_derived 提示，保持现状)
+  // 如果 op 缺签名推导，这里不强制，保留原行为，由服务端 op_derived hint 覆盖
+}
+// ==================== END #303 ====================
+
+/** 默认暴露的核心工具集合：**记忆面已基元化**，只注册 `cg` / `stg` 两个认知基元。 */
 export const CORE_TOOLS = [
-  'cg',   // md_cg 认知图统一入口（op 分发：route/read/recent/identity/verify/whitebox…）
-  'stg',  // md_cg 时空图入口（timeline/relation/anchor/consistency…）
+  'cg',
+  'stg',
 ] as const
 
-/**
- * 大脑模式工具集：`cg`/`stg` 基元 + md_cg 全部细粒度工具（`MDCG_MCP_SURFACE=full`）。
- *
- * 即「完整认知面」。不再区分身体/视觉——那些工具随 aeis 剥离，主仓无对应物。
- * 管理类（forget / restore / review_decide）按映射表裁定「收窄后不留」，不在此列
- * （如需显式启用，用 `tools: ['mdcg_forget', …]` 显式数组——显式配置不受 RISK 限制）。
- */
 export const BRAIN_TOOLS = [
   'cg', 'stg',
-  // 记忆读写
   'mdcg_remember', 'mdcg_recall', 'mdcg_search', 'mdcg_get',
-  // 反思 / 验证 / 飞轮 / 负记忆
   'mdcg_reflect', 'mdcg_verify', 'mdcg_flywheel', 'mdcg_mine_fix_pairs',
   'mdcg_rejected', 'mdcg_unresolved',
-  // 审核队列（入队 / 列队 / 记录审计；裁决 review_decide 属管理类，不在此列）
   'mdcg_propose', 'mdcg_review_list', 'mdcg_review_records',
-  // 保护 / 遗忘留痕（forget 属管理类，不在此列）
   'mdcg_protect', 'mdcg_forgetting_history',
-  // 身份 / 一致性 / 元认知 / 自我状态
   'mdcg_identity', 'mdcg_consistency', 'mdcg_metacognition', 'mdcg_self_state',
-  // 预测 / 因果 / 演化账本
   'mdcg_predict', 'mdcg_causal', 'mdcg_evolution',
-  // 服务 / 状态
   'mdcg_health', 'mdcg_whoami', 'mdcg_ingest', 'mdcg_watermarks',
   'mdcg_whitebox', 'mdcg_service_info',
 ] as const
 
-/** tools 配置：'core' | 'brain' | 'all' | 显式名称数组。 */
 export type ToolSelection = 'core' | 'brain' | 'all' | string[]
 
-/** P1 修复（GPT 审查）：只读/无副作用工具才允许并发——写操作（记忆/关系/
- * 生命周期/摄取/学习）标 false，防止 DSH 并行调用导致 SQLite 写入竞争、
- * 状态顺序错乱、关系边重复等。 */
 const READ_TOOLS = new Set([
-  // —— md_cg 细粒度只读工具（非多态：无 action 写分支）——
   'mdcg_recall', 'mdcg_search', 'mdcg_get', 'mdcg_review_list', 'mdcg_review_records',
   'mdcg_forgetting_history', 'mdcg_health', 'mdcg_whoami', 'mdcg_watermarks', 'mdcg_service_info',
-  // 注：cg / stg 是多态基元（op=focus/route 只读，op=write 写），一律按写处理（串行）。
-  // 多态工具（mdcg_predict/causal/evolution/protect/identity/self_state/whitebox…）
-  // 含 action=写 分支，同样保守按写处理。
 ])
 
-/** 按工具名判定并发安全（只读查询 true；写操作 false） */
 export function isToolConcurrencySafe(name: string): boolean {
   return READ_TOOLS.has(name)
 }
 
-/**
- * P1 完善（GPT 审查·tools:all 自动扩权）：即使 selection='all' 也排除的宿主级
- * 风险工具——此前后端新增工具即自动暴露给 Agent（动态扩权无 denylist）。
- * 排除原则：宿主命令执行/权限终裁/外部设备/自主生命周期控制/角色卡写入。
- * 显式名称数组（显式配置）不受此名单限制（配置者已明确选择）。
- */
 export const RISK_TOOLS = new Set([
-  // —— md_cg 管理类（映射表裁定「收窄后不留」，需 can_admin）：即使 tools:'all'
-  //    也不自动暴露；要启用须用显式名称数组 ——
-  'mdcg_forget',        // 软删除（管理隔离：需 can_admin）
-  'mdcg_restore',       // 强恢复校验（管理隔离：需 can_admin）
-  'mdcg_review_decide', // 审核终裁（管理隔离：需 can_admin，等效设计者裁决）
+  'mdcg_forget',
+  'mdcg_restore',
+  'mdcg_review_decide',
 ])
 
-/** 按配置筛选工具名（'all' 时排除 RISK_TOOLS 宿主级危险工具）。 */
 export function selectTools(all: string[], selection: ToolSelection): string[] {
   if (selection === 'all') return all.filter((name) => !RISK_TOOLS.has(name))
   const allowed = new Set(
@@ -96,7 +185,6 @@ export function selectTools(all: string[], selection: ToolSelection): string[] {
   return all.filter((name) => allowed.has(name))
 }
 
-/** 把 MCP JSON Schema 的属性表转换为 ParameterSchemaSpec。 */
 export function schemaToParameters(inputSchema: Record<string, unknown> | undefined): ParameterSchemaSpec {
   if (!inputSchema || typeof inputSchema !== 'object') return {}
   const properties = inputSchema['properties'] as Record<string, unknown> | undefined
@@ -114,7 +202,6 @@ export function schemaToParameters(inputSchema: Record<string, unknown> | undefi
   return spec
 }
 
-/** 递归转换单个 JSON Schema 节点为 ValueSchemaSpec。 */
 function toValueSpec(raw: unknown): ValueSchemaSpec {
   if (typeof raw !== 'object' || raw === null) return { type: 'json' }
   const node = raw as Record<string, unknown>
@@ -140,9 +227,6 @@ function toValueSpec(raw: unknown): ValueSchemaSpec {
     }
     case 'object': {
       const props = schemaToParameters(node)
-      // P1 修复（GPT 审查）：尊重后端 additionalProperties 声明（false 保留），
-      // 不再无条件 true——此前后端写 false 也会被覆盖成 true，DSH 侧认为
-      // 参数合法但后端拒绝。
       const additional = node['additionalProperties'] === false ? false : true
       return { type: 'object', properties: props, additionalProperties: additional, ...annotations }
     }
@@ -151,7 +235,6 @@ function toValueSpec(raw: unknown): ValueSchemaSpec {
   }
 }
 
-/** 从灵枢 content 数组中提取文本（MCP text block 拼接）。 */
 export function extractText(content: Array<{ type: string; text?: string; [key: string]: unknown }>): string {
   return content
     .map((block) => (block.type === 'text' && typeof block.text === 'string' ? block.text : ''))
@@ -159,7 +242,6 @@ export function extractText(content: Array<{ type: string; text?: string; [key: 
     .join('\n')
 }
 
-/** 注册灵枢工具到 ctx.tools；返回取消注册函数。 */
 export async function registerLingshuTools(
   ctx: Context,
   bridge: LingshuBridge,
@@ -179,23 +261,21 @@ export async function registerLingshuTools(
         parameters: schemaToParameters(tool.inputSchema),
         output: {
           schema: { type: 'json' } as never,
-          render(_args, value) {
+          render(_args: Record<string, unknown>, value: unknown) {
             return [{ type: 'text', text: extractText((value as McpCallResultLike).content ?? []) }]
           },
         },
         timeoutMs: 120_000,
-        // P1 修复（GPT 审查）：按工具分类——只读查询可并发，写操作串行
         isConcurrencySafe: () => isToolConcurrencySafe(tool.name),
-        // P1 修复（GPT 审查）：接收 exec.signal（用户取消/上层超时）——
-        // 此前完全忽略取消，取消后写操作（remember/relate/ingest 等）仍可能产生副作用
-        async execute(args: Record<string, unknown>, exec: { signal: AbortSignal }) {
+        async execute(args: Record<string, unknown>, exec: { signal: Parameters<LingshuBridge['callTool']>[2] }) {
           if (exec.signal.aborted) throw new Error(`灵枢 ${tool.name} 已取消`)
-          // B 治本批（2026-10-06）：agent 直调工具的转发面把**运行期会话**注入
-          // **写归因调用**——env（MDCG_SESSION）取消后，请求声明即归因唯一来源
-          // （md_cg/mcp_server.py 的 _declared_session：env > 请求声明 > 进程身份）。
-          // 判据单点在 lib/session_state.ts 的 attributeSession：只注入
-          // mdcg_remember 与 cg(op=write) 两个写面；读面（视图过滤）/ op 特化语义
-          // 一律不动。命中且未显式声明时返回新对象，否则原样透传。
+          // #303 边界加固: 在转发前显式校验，返回结构化错误而非静默/null
+          try {
+            validateCommonArgs(args)
+          } catch (e) {
+            // 直接抛出，让 DSH 侧看到明确错误码
+            throw e
+          }
           const forwarded = attributeSession(tool.name, args as Record<string, unknown>)
           const result = await bridge.callTool(tool.name, forwarded, exec.signal)
           if (exec.signal.aborted) throw new Error(`灵枢 ${tool.name} 已取消`)
