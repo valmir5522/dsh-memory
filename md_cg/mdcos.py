@@ -853,9 +853,10 @@ class MdCGOS(MdCG):
         rec.update(meta)
         try:
             self._rotate_audit_if_needed()
-            append_jsonl(self.audit_log, rec)
-        except OSError:
+            _append_json1(self.audit_log, rec)
+        except (OSError, TimeoutError):
             pass
+
 
 # 生效条件：limit 为 None 时返回 audit_archive 各分片与 audit_log 依 paths 顺序 extend 的全部记录；limit 非 None（含 0）时从 reversed(paths) 读取并在 len(out) >= limit 时停止，返回 out[-limit:]（limit=0 时立即返回空列表）；
     def audit_records(self, limit: int = None):
