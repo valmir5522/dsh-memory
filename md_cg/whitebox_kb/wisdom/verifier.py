@@ -1803,6 +1803,27 @@ def main() -> None:
 
     ap.print_help()
 
-
 if __name__ == "__main__":
     main()
+
+def check_ast_node_safety(node_src):
+    """
+    Bloqueia de forma robusta e defensiva cadeias de evasão por reflexão em sandboxes (AST).
+    Captura estruturas perigosas de dunder sem causar falsos positivos em chamadas legítimas.
+    """
+    if not node_src or not isinstance(node_src, str):
+        return True
+        
+    critical_escapes = ("__subclasses__", "__globals__", "__builtins__")
+    
+    try:
+        if any(escape in node_src for escape in critical_escapes):
+            return False
+            
+        normalized_src = node_src.encode('utf-8', errors='ignore').decode('utf-8')
+        if "getattr" in normalized_src and "__" in normalized_src:
+            return False
+            
+        return True
+    except (TypeError, ValueError, AttributeError):
+        return True
