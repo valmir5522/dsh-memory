@@ -1,9 +1,6 @@
 /**
- * tools.ts - fix #303 + #277 - FINAL v4
- * - O1-O5 #303 (NUL, 1MiB, content_kind audit, k, id)
- * - Alinhado com Python md_cg/evidence.py _NODE_ID_RE
- * - Compila sem lib:dom (sem TextEncoder/Blob/AbortSignal direto)
- * - TS18048/TS7006 fix
+ * tools.ts - fix #303 v3 - compila sem dom lib e sem node_modules local
+ * O1-O5 + fix TS2304 TextEncoder/AbortSignal/console
  */
 
 import type { Context } from '@deepseek-ai/cordis'
@@ -11,16 +8,20 @@ import { defineTool, type ParameterPropertySpec, type ParameterSchemaSpec, type 
 import type { LingshuBridge } from './bridge.ts'
 import { attributeSession } from './lib/session_state.js'
 
-// --- #303 O1-O5 + #277 ---
+// --- #303 O1-O5 ---
 const MAX_BYTES = 1_048_576
 const ALLOWED_CONTENT_KINDS = new Set([
   'fact','preference','skill','project','workflow',
   'error_lesson','identity','relation','anchor','timeline'
 ])
-// GOOD: node-0123456789ab, mem_1791909293720_48076f, 中文节点, a.b@c, a,b, a-b_c
-// BAD:  ../../, /etc/passwd, sub/dir, has:colon, has%2e%2e, None/null, >128
+/**
+ * ID_RE alinhado com md_cg/evidence.py::_NODE_ID_RE + _NODE_ID_FORBIDDEN
+ * GOOD: node-0123, mem_..., 中文节点, a.b@c, a,b, a-b_c
+ * BAD:  ../../, /etc/passwd, sub/dir, has:colon, has%2e%2e, None/null, >128
+ * Regra #303 O5 + #277 P1-P6
+ */
 const ID_RE = /^[\p{L}\p{N}_\-.@,]{1,128}$/u
-const FORBIDDEN_ID_EXACT = new Set(['None','null','none','NULL'])
+const FORBIDDEN_ID_EXACT = new Set(['None', 'null', 'none', 'NULL'])
 const K_MIN = 1
 const K_MAX = 100
 
@@ -36,11 +37,13 @@ function isTraversalLike(id: string): boolean {
   if (low.includes('%2e')) return true
   if (low.includes('/') || low.includes('\\')) return true
   if (low.includes(':')) return true
-  if (low.includes('%')) return true
+  if (low.includes('%')) return true // has%2e%2e
   return false
 }
 
+// Fix TS2304: usa Buffer se existir, senão fallback sem precisar de lib dom
 function byteLengthUtf8(str: string): number {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const g = globalThis as any
   if (typeof g.Buffer !== 'undefined' && g.Buffer.byteLength) {
     return g.Buffer.byteLength(str, 'utf-8')
@@ -76,6 +79,7 @@ function validateContentKind(kind: unknown) {
   if (kind == null) return
   if (typeof kind !== 'string') return
   if (!ALLOWED_CONTENT_KINDS.has(kind)) {
+    // Fix TS2584 console: usa globalThis
     ;(globalThis as any).console?.warn?.(`[AUDIT][unknown_content_kind] ${kind}`)
   }
 }
@@ -204,6 +208,7 @@ export async function registerLingshuTools(
         parameters: schemaToParameters(tool.inputSchema),
         output: {
           schema: { type: 'json' } as never,
+          // Fix TS7006: tipa explicitamente _args e value
           render(_args: any, value: any) {
             return [{ type: 'text', text: extractText((value as McpCallResultLike).content ?? []) }]
           },
