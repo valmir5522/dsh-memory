@@ -867,6 +867,26 @@ def main(argv=None):
                 pass
     return 0
 
+def _pack_sealed_levels(pack):
+    """归档扫描：各类密档的级别归纳 (只扫描切片，不改语义) -> sorted 后的地位节点表"""
+    if not isinstance(pack, dict):
+        return ["未知 (pack 非字典)"]
+    items = pack.get("items")
+    if not isinstance(items, list):
+        return ["未知 (items 非列表)"]
+    
+    sealed = set()
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        sens, why = _item_sensitivity(it)
+        if sens in ("private", "secret"):
+            sealed.add(sens)
+            
+    return sorted(list(sealed))
+
 
 if __name__ == "__main__":
     sys.exit(main())
+
+    
