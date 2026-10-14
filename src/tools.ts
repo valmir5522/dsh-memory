@@ -1,10 +1,6 @@
 /**
- * tools.ts - fix #303 + #277 - FINAL v4 - NÃO EDITAR O ID_RE
- * - O1-O5 #303 (NUL, 1MiB, content_kind audit, k, id)
- * - Alinhado com Python md_cg/evidence.py::_NODE_ID_RE
- * - GOOD: node-0123, mem_..., 中文节点, a.b@c, a,b, a-b_c
- * - BAD:  ../../, /etc/passwd, sub/dir, has:colon, has%2e%2e, None/null, >128
- * - 488/488 PASS
+ * tools.ts - fix #303 v3 - compila sem dom lib e sem node_modules local
+ * O1-O5 + fix TS2304 TextEncoder/AbortSignal/console
  */
 
 import type { Context } from '@deepseek-ai/cordis'
@@ -21,8 +17,8 @@ const ALLOWED_CONTENT_KINDS = new Set([
 /**
  * ID_RE alinhado com md_cg/evidence.py::_NODE_ID_RE + _NODE_ID_FORBIDDEN
  * GOOD: node-0123, mem_..., 中文节点, a.b@c, a,b, a-b_c
- * BAD:  ../../, /etc/passwd, sub/dir, has:colon, has%2e%2e, None/null, >128
- * Regra #303 O5 + #277 P1-P6 - NÃO MUDAR PARA /^[A-Za-z0-9_-]$/
+ * BAD:  ../../, /etc/passwd, sub/dir, has:colon, has%2e%2e, None/null, >128, ., ..
+ * Regra #303 O5 + #277 P1-P6 - v4 FINAL TRAVADO - NÃO VOLTAR PARA /^[A-Za-z0-9_-]$/
  */
 const ID_RE = /^[\p{L}\p{N}_\-.@,]{1,128}$/u
 const FORBIDDEN_ID_EXACT = new Set(['None', 'null', 'none', 'NULL'])
@@ -35,38 +31,22 @@ function throwExplicit(code: string, msg: string): never {
   throw err
 }
 
-function isTraversalLike(id: string): boolean {
-  const low = id.toLowerCase()
-  if (low.includes('..')) return true
-  if (low.includes('%2e')) return true
-  if (low.includes('/') || low.includes('\\')) return true
-  if (low.includes(':')) return true
-  if (low.includes('%')) return true // has%2e%2e
-  return false
-}
-
 // Fix TS2304: usa Buffer se existir, senão fallback sem precisar de lib dom
 function byteLengthUtf8(str: string): number {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const g = globalThis as any
-  if (typeof g.Buffer !== 'undefined' && g.Buffer.byteLength) {
+  if (typeof g.Buffer !== 'undefined') {
     return g.Buffer.byteLength(str, 'utf-8')
   }
   if (typeof g.TextEncoder !== 'undefined') {
     return new g.TextEncoder().encode(str).length
   }
+  // fallback puro JS (aproximado, suficiente pra 1MiB check) - usa globalThis pra não precisar de lib dom
   if (typeof g.Blob !== 'undefined') {
-    try { return new g.Blob([str]).size } catch {}
+    return new g.Blob([str]).size
   }
-  let len = 0
-  for (let i = 0; i < str.length; i++) {
-    const c = str.charCodeAt(i)
-    if (c <= 0x7f) len += 1
-    else if (c <= 0x7ff) len += 2
-    else if (c >= 0xd800 && c <= 0xdbff) { len += 4; i++ }
-    else len += 3
-  }
-  return len
+  // ultimo fallback: conta caracteres * 3 (utf8 max)
+  return str.length * 3
 }
 
 function validateContentField(value: unknown, fieldName = 'content') {
@@ -99,10 +79,12 @@ function validateId(id: unknown, fieldName = 'id') {
   if (typeof id !== 'string') {
     throwExplicit('INVALID_NODE_ID', `${fieldName} 类型错误`)
   }
+  // #277 P1: reserva None/null etc
   if (FORBIDDEN_ID_EXACT.has(id)) {
     throwExplicit('INVALID_NODE_ID', `invalid_node_id: reserved=${id}`)
   }
-  if (isTraversalLike(id)) {
+  // #277 P2-P6: traversal
+  if (id === '.' || id === '..' || id.includes('..') || id.includes('/') || id.includes('\\') || id.includes(':') || id.includes('%')) {
     throwExplicit('INVALID_NODE_ID', `invalid_node_id: traversal=${id}`)
   }
   if (!ID_RE.test(id)) {
