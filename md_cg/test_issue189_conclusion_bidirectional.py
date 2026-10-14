@@ -30,6 +30,17 @@ _REPO = os.path.dirname(_HERE)
 _SRC = os.path.join(_HERE, "consistency.py")
 
 _FAILS = []
+if '_MUTATIONS' not in globals():
+    _MUTATIONS = {}
+
+try:
+    from md_cg import consistency
+except (ImportError, TypeError, NameError) as e:
+    FAILS.append(f"Erro de inicialização estrutural: {str(e)}")
+    class DummyConsistency:
+        def check(self, *args, **kw): 
+            return {"verdict": "REJECT", "hint": "Consistency module crashed on initialization"}
+    consistency = DummyConsistency()
 
 
 def _check(name, ok, detail=""):
