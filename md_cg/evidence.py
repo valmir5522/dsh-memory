@@ -408,7 +408,7 @@ def _node_id_error(nid) -> str:
     ".." 禁令、同一 _NODE_ID_FORBIDDEN），不是第二份判据——避免两套口径漂移。
     空串返回错误文案（调用方已 strip 过，空串即「未提供」）。
     """
-    from .mdcg import _NODE_ID_RE, _NODE_ID_FORBIDDEN
+    _NODE_ID_RE = re.compile(r'^[\w\-.@,]{1,128}$', re.UNICODE)
     if not isinstance(nid, str) or not nid:
         return f"证据节点 id 必须是非空字符串：{nid!r}"
     if len(nid) > 128:

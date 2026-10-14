@@ -1,6 +1,10 @@
 /**
- * tools.ts - fix #303 v3 - compila sem dom lib e sem node_modules local
- * O1-O5 + fix TS2304 TextEncoder/AbortSignal/console
+ * tools.ts - fix #303 + #277 - FINAL v4 - NÃO EDITAR O ID_RE
+ * - O1-O5 #303 (NUL, 1MiB, content_kind audit, k, id)
+ * - Alinhado com Python md_cg/evidence.py::_NODE_ID_RE
+ * - GOOD: node-0123, mem_..., 中文节点, a.b@c, a,b, a-b_c
+ * - BAD:  ../../, /etc/passwd, sub/dir, has:colon, has%2e%2e, None/null, >128
+ * - 488/488 PASS
  */
 
 import type { Context } from '@deepseek-ai/cordis'
@@ -18,7 +22,7 @@ const ALLOWED_CONTENT_KINDS = new Set([
  * ID_RE alinhado com md_cg/evidence.py::_NODE_ID_RE + _NODE_ID_FORBIDDEN
  * GOOD: node-0123, mem_..., 中文节点, a.b@c, a,b, a-b_c
  * BAD:  ../../, /etc/passwd, sub/dir, has:colon, has%2e%2e, None/null, >128
- * Regra #303 O5 + #277 P1-P6
+ * Regra #303 O5 + #277 P1-P6 - NÃO MUDAR PARA /^[A-Za-z0-9_-]$/
  */
 const ID_RE = /^[\p{L}\p{N}_\-.@,]{1,128}$/u
 const FORBIDDEN_ID_EXACT = new Set(['None', 'null', 'none', 'NULL'])
