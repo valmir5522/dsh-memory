@@ -101,7 +101,13 @@ function validateCommonArgs(args: Record<string, unknown>) {
   for (const key of ['k','top_k','topK','limit']) {
     if (key in args) validateK(args[key])
   }
-  for (const key of ['id','node_id','nodeId','target_id','source_id','anchor_id']) {
+  // v4.3 - expande para cobrir issue147 pack_id, 245 swarm, 258 pack, 265, 277, 294 flywheel, 295 sleep_root, 297 rewrite, p24 evidence
+  for (const key of [
+    'id','node_id','nodeId','target_id','source_id','anchor_id',
+    'pack_id','packId','swarm_id','swarmId','pool_id','poolId',
+    'pack','swarm','anchor','root','binding','evidence_id','evidenceId',
+    'flywheel_id','rewrite_id','sleep_id','sensitive_id'
+  ]) {
     if (key in args) validateId(args[key], key)
   }
 }

@@ -33,6 +33,16 @@ def _is_traversal_like(s: str) -> bool:
         return True
     return False
 
+# v4.3 - pack_id, swarm, etc para issue147,245,258,265,294,295,297,p24
+def _is_pack_traversal_like(s: str) -> bool:
+    return _is_traversal_like(s)
+
+def validate_pack_id(id_value: str, field_name: str = 'pack_id'):
+    return validate_node_id(id_value, field_name)
+
+def validate_any_id(id_value: str, field_name: str = 'id'):
+    return validate_node_id(id_value, field_name)
+
 def validate_node_id(id_value: str, field_name: str = 'id'):
     """Validação alinhada com TS tools.ts O5 + #277 P1-P6"""
     if id_value is None:
